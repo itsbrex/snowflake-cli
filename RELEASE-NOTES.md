@@ -16,23 +16,100 @@
 
 # Unreleased version
 ## Backward incompatibility
+* Dropped support for Python below 3.10 version.
+* `snow object stage` commands are removed in favour of `snow stage`.
+* `snow snowpark init` and `snow streamlit init` commands are removed in favor of `snow init` command.
+* Removed deprecated flags from `snow snowpark` commands.
+* Default Python version for Snowpark functions and procedures was bumped to 3.10 from 3.8.
+
+## Deprecations
+  * Added deprecation warning for `native_app.package.scripts` in project definition file.
+
+## New additions
+* Added support for `native_app.package.post_deploy` scripts in project definition file.
+  * These scripts will execute whenever a Native App Package is created or updated.
+  * Currently only supports SQL scripts: `post_deploy: [{sql_script: script.sql}]`
+* Added `snow spcs service execute-job` command, which supports creating and executing a job service in the current schema.
+
+## Fixes and improvements
+* Fixed problem with whitespaces in `snow connection add` command
+* Added check for the correctness of token file and private key paths when addind a connection
+* Fix the typo in spcs service name argument description. It is the identifier of the **service** instead of the **service pool**.
+
+# v2.7.0
+
+# Unreleased version
+## Backward incompatibility
+
+## Deprecations
+* `snow snowpark init` and `snow streamlit init` are marked as deprecated. The commands are still functional,
+but should be replaced with `snow init`
+## New additions
+* Added connection option `--token-file-path` allowing passing OAuth token using a file. The function is also
+  supported by setting `token_file_path` in connection definition.
+* Support for Python remote execution via `snow stage execute` and `snow git execute` similar to existing EXECUTE IMMEDIATE support.
+* Added support for project definition file defaults in templates
+* Added support for autocomplete in `--connection` flag.
+* Added `snow init` command, which supports initializing projects with external templates.
+
+## Fixes and improvements
+* The `snow app run` command now allows upgrading to unversioned mode from a versioned or release mode application installation
+* The `snow app teardown` command now allows dropping a package with versions when the `--force` flag is provided
+* The `snow app version create` command now allows operating on application packages created outside the CLI
+* Added support for user stages in stage execute and copy commands
+* Improved support for quoted identifiers in snowpark commands.
+* Updated post_deploy SQL script default database to be the application database
+* Handle `NULL` md5 values correctly when returned by stage storage backends
+* Regionless host URLs are now supported when generating Snowsight URLs
+* `snow app run` and `snow app deploy` now correctly determine modified status for large files uploaded to AWS S3
+
+# v2.6.1
+## Backward incompatibility
 
 ## Deprecations
 
 ## New additions
+
+## Fixes and improvements
+* `snow object create` message returns meaningful error if connection database is not defined.
+* Fixed crashing when save_logs is false and log directory does not exist
+
+# v2.6.0
+## Backward incompatibility
+
+## Deprecations
+
+## New additions
+* Add `snow object create` command
 * Added support for `title` field in Streamlit definition in `snowflake.yml` project file.
 * Added `--auto-compress` flag to `snow stage copy` command enabling use of gzip to compress files during upload.
 * Added new `native_app.application.post_deploy` section to `snowflake.yml` schema to execute actions after the application has been deployed via `snow app run`.
   * Added the `sql_script` hook type to run SQL scripts with template support.
+* Added support for `--env` command line arguments for templating.
+  * Available for commands that make use of the project definition file.
+  * Format of the argument: `--env key1=value1 --env key2=value2`.
+  * Overrides `env` variables values when used in templating.
+  * Can be referenced in templating through `ctx.env.<key_name>`.
+  * Templating will read env vars in this order of priority (highest priority to lowest priority):
+    * vars from `--env` command line argument.
+    * vars from shell environment variables.
+    * vars from `env` section of project definition file.
 
 ## Fixes and improvements
 * Passing a directory to `snow app deploy` will now deploy any contained file or subfolder specified in the application's artifact rules
 * Fixes markup escaping errors in `snow sql` that may occur when users use unintentionally markup-like escape tags.
+* Fixed case where `snow app teardown` could not tear down orphan applications (those that have had their package dropped)
 * Fixed case where `snow app teardown` could leave behind orphan applications if they were not created by the Snowflake CLI
 * Fixed case where `snow app run` could fail to run an existing application whose package was dropped by prompting to drop and recreate the application
 * Improve terminal output sanitization to avoid ASCII escape codes.
 * The `snow sql` command will show query text before executing it.
 * Improved stage diff output in `snow app` commands
+* Hid the diff from `snow app validate` output since it was redundant
+* Added log into the file with loaded external plugins
+* Warn users if they attempt to use templating with project definition version 1
+* Improved output and format of Pydantic validation errors
+* Improved support for quoted identifiers in streamlit commands.
+* The `snow app run` command will no longer override debug mode during an application upgrade unless explicitly set in `snowflake.yml`
 
 # v2.5.0
 ## Backward incompatibility

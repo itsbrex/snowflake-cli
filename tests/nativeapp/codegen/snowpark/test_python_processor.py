@@ -21,12 +21,11 @@ from textwrap import dedent
 from unittest import mock
 
 import pytest
-from snowflake.cli.api.project.schemas.native_app.path_mapping import ProcessorMapping
-from snowflake.cli.plugins.nativeapp.codegen.sandbox import (
+from snowflake.cli._plugins.nativeapp.codegen.sandbox import (
     ExecutionEnvironmentType,
     SandboxExecutionError,
 )
-from snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor import (
+from snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor import (
     SnowparkAnnotationProcessor,
     _determine_virtual_env,
     _execute_in_sandbox,
@@ -34,9 +33,11 @@ from snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor import (
     generate_create_sql_ddl_statement,
     generate_grant_sql_ddl_statements,
 )
+from snowflake.cli.api.project.schemas.native_app.path_mapping import ProcessorMapping
 
-from tests.nativeapp.utils import assert_dir_snapshot
+from tests.nativeapp.utils import assert_dir_snapshot, create_native_app_project_model
 from tests.testing_utils.files_and_dirs import pushd, temp_local_dir
+from tests_common import IS_WINDOWS
 
 PROJECT_ROOT = Path("/path/to/project")
 
@@ -98,7 +99,7 @@ def test_determine_virtual_env(input_param, expected):
 
 
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor.execute_script_in_sandbox"
+    "snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor.execute_script_in_sandbox"
 )
 def test_execute_in_sandbox_full_entity(mock_sandbox):
     mock_completed_process = mock.MagicMock(spec=subprocess.CompletedProcess)
@@ -114,7 +115,7 @@ def test_execute_in_sandbox_full_entity(mock_sandbox):
 
 
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor.execute_script_in_sandbox"
+    "snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor.execute_script_in_sandbox"
 )
 def test_execute_in_sandbox_all_possible_none_cases(mock_sandbox):
     mock_completed_process = mock.MagicMock(spec=subprocess.CompletedProcess)
@@ -162,20 +163,26 @@ def test_execute_in_sandbox_all_possible_none_cases(mock_sandbox):
 
 
 def test_generate_create_sql_ddl_statements_w_all_entries(
-    native_app_extension_function, snapshot
+    native_app_extension_function, os_agnostic_snapshot
 ):
-    assert generate_create_sql_ddl_statement(native_app_extension_function) == snapshot
+    assert (
+        generate_create_sql_ddl_statement(native_app_extension_function)
+        == os_agnostic_snapshot
+    )
 
 
 def test_generate_create_sql_ddl_statements_w_select_entries(
-    native_app_extension_function, snapshot
+    native_app_extension_function, os_agnostic_snapshot
 ):
     native_app_extension_function.imports = None
     native_app_extension_function.packages = None
     native_app_extension_function.schema_name = None
     native_app_extension_function.secrets = None
     native_app_extension_function.external_access_integrations = None
-    assert generate_create_sql_ddl_statement(native_app_extension_function) == snapshot
+    assert (
+        generate_create_sql_ddl_statement(native_app_extension_function)
+        == os_agnostic_snapshot
+    )
 
 
 # --------------------------------------------------------
@@ -183,8 +190,13 @@ def test_generate_create_sql_ddl_statements_w_select_entries(
 # --------------------------------------------------------
 
 
-def test_generate_grant_sql_ddl_statements(native_app_extension_function, snapshot):
-    assert generate_grant_sql_ddl_statements(native_app_extension_function) == snapshot
+def test_generate_grant_sql_ddl_statements(
+    native_app_extension_function, os_agnostic_snapshot
+):
+    assert (
+        generate_grant_sql_ddl_statements(native_app_extension_function)
+        == os_agnostic_snapshot
+    )
 
 
 # --------------------------------------------------------
@@ -192,7 +204,7 @@ def test_generate_grant_sql_ddl_statements(native_app_extension_function, snapsh
 # --------------------------------------------------------
 
 
-def test_edit_setup_script_with_exec_imm_sql(snapshot):
+def test_edit_setup_script_with_exec_imm_sql(os_agnostic_snapshot):
     manifest_contents = dedent(
         f"""\
         manifest_version: 1
@@ -204,14 +216,14 @@ def test_edit_setup_script_with_exec_imm_sql(snapshot):
     dir_structure = {
         "output/deploy/manifest.yml": manifest_contents,
         "output/deploy/moduleA/moduleC/setup.sql": "create application role app_public;",
-        "output/deploy/__generated/moduleB/dummy.sql": "#this is a file",
-        "output/deploy/__generated/dummy.sql": "#this is a file",
+        "output/deploy/__generated/snowpark/moduleB/dummy.sql": "#this is a file",
+        "output/deploy/__generated/snowpark/dummy.sql": "#this is a file",
     }
 
     with temp_local_dir(dir_structure=dir_structure) as local_path:
         with pushd(local_path):
             deploy_root = Path(local_path, "output", "deploy")
-            generated_root = Path(deploy_root, "__generated")
+            generated_root = Path(deploy_root, "__generated", "snowpark")
             collected_sql_files = [
                 Path(generated_root, "moduleB", "dummy.sql"),
                 Path(generated_root, "dummy.sql"),
@@ -223,10 +235,12 @@ def test_edit_setup_script_with_exec_imm_sql(snapshot):
                 generated_root=generated_root,
             )
 
-            assert_dir_snapshot(deploy_root.relative_to(local_path), snapshot)
+            assert_dir_snapshot(
+                deploy_root.relative_to(local_path), os_agnostic_snapshot
+            )
 
 
-def test_edit_setup_script_with_exec_imm_sql_noop(snapshot):
+def test_edit_setup_script_with_exec_imm_sql_noop(os_agnostic_snapshot):
     manifest_contents = dedent(
         f"""\
         manifest_version: 1
@@ -238,25 +252,30 @@ def test_edit_setup_script_with_exec_imm_sql_noop(snapshot):
     dir_structure = {
         "output/deploy/manifest.yml": manifest_contents,
         "output/deploy/moduleA/moduleC/setup.sql": None,
-        "output/deploy/__generated/__generated.sql": "#some text",
+        "output/deploy/__generated/snowpark/__generated.sql": "#some text",
     }
 
     with temp_local_dir(dir_structure=dir_structure) as local_path:
         with pushd(local_path):
             deploy_root = Path(local_path, "output", "deploy")
             collected_sql_files = [
-                Path(deploy_root, "__generated", "dummy.sql"),
+                Path(deploy_root, "__generated", "snowpark", "dummy.sql"),
             ]
             edit_setup_script_with_exec_imm_sql(
                 collected_sql_files=collected_sql_files,
                 deploy_root=deploy_root,
-                generated_root=Path(deploy_root, "__generated"),
+                generated_root=Path(deploy_root, "__generated", "snowpark"),
             )
 
-            assert_dir_snapshot(deploy_root.relative_to(local_path), snapshot)
+            assert_dir_snapshot(
+                deploy_root.relative_to(local_path), os_agnostic_snapshot
+            )
 
 
-def test_edit_setup_script_with_exec_imm_sql_symlink(snapshot):
+@pytest.mark.skipif(
+    IS_WINDOWS, reason="Symlinks on Windows are restricted to Developer mode or admins"
+)
+def test_edit_setup_script_with_exec_imm_sql_symlink(os_agnostic_snapshot):
     manifest_contents = dedent(
         f"""\
         manifest_version: 1
@@ -277,7 +296,7 @@ def test_edit_setup_script_with_exec_imm_sql_symlink(snapshot):
             deploy_root_setup_script = Path(deploy_root, "setup.sql")
             deploy_root_setup_script.symlink_to(Path(local_path, "setup.sql"))
 
-            generated_root = Path(deploy_root, "__generated")
+            generated_root = Path(deploy_root, "__generated", "snowpark")
             collected_sql_files = [
                 Path(generated_root, "moduleB", "dummy.sql"),
                 Path(generated_root, "dummy.sql"),
@@ -285,10 +304,12 @@ def test_edit_setup_script_with_exec_imm_sql_symlink(snapshot):
             edit_setup_script_with_exec_imm_sql(
                 collected_sql_files=collected_sql_files,
                 deploy_root=deploy_root,
-                generated_root=Path(deploy_root, "__generated"),
+                generated_root=Path(deploy_root, "__generated", "snowpark"),
             )
 
-            assert_dir_snapshot(deploy_root.relative_to(local_path), snapshot)
+            assert_dir_snapshot(
+                deploy_root.relative_to(local_path), os_agnostic_snapshot
+            )
 
 
 # --------------------------------------------------------
@@ -317,10 +338,10 @@ minimal_dir_structure = {
 
 
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
+    "snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
 )
 def test_process_no_collected_functions(
-    mock_sandbox, native_app_project_instance, snapshot
+    mock_sandbox, native_app_project_instance, os_agnostic_snapshot
 ):
     with temp_local_dir(minimal_dir_structure) as local_path:
         with pushd(local_path):
@@ -328,30 +349,30 @@ def test_process_no_collected_functions(
                 {"src": "a/b/c/*.py", "dest": "stagepath/", "processors": ["SNOWPARK"]}
             ]
             mock_sandbox.side_effect = [None, []]
-            deploy_root = Path(local_path, "output/deploy")
-            generated_root = Path(deploy_root, "__generated")
-            SnowparkAnnotationProcessor(
-                project_definition=native_app_project_instance,
+            project = create_native_app_project_model(
+                project_definition=native_app_project_instance.native_app,
                 project_root=local_path,
-                deploy_root=deploy_root,
-                generated_root=generated_root,
-            ).process(
+            )
+            processor = SnowparkAnnotationProcessor(project.get_bundle_context())
+            processor.process(
                 artifact_to_process=native_app_project_instance.native_app.artifacts[0],
                 processor_mapping=ProcessorMapping(name="SNOWPARK"),
                 write_to_sql=False,  # For testing
             )
 
-            assert_dir_snapshot(deploy_root.relative_to(local_path), snapshot)
+            assert_dir_snapshot(
+                project.deploy_root.relative_to(local_path), os_agnostic_snapshot
+            )
 
 
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
+    "snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
 )
 def test_process_with_collected_functions(
     mock_sandbox,
     native_app_project_instance,
     native_app_extension_function_raw_data,
-    snapshot,
+    os_agnostic_snapshot,
 ):
 
     with temp_local_dir(minimal_dir_structure) as local_path:
@@ -380,19 +401,19 @@ def test_process_with_collected_functions(
                 [native_app_extension_function_raw_data],
                 [imports_variation],
             ]
-            deploy_root = Path(local_path, "output/deploy")
-            generated_root = Path(deploy_root, "__generated")
-            SnowparkAnnotationProcessor(
-                project_definition=native_app_project_instance,
+            project = create_native_app_project_model(
+                project_definition=native_app_project_instance.native_app,
                 project_root=local_path,
-                deploy_root=deploy_root,
-                generated_root=generated_root,
-            ).process(
+            )
+            processor = SnowparkAnnotationProcessor(project.get_bundle_context())
+            processor.process(
                 artifact_to_process=native_app_project_instance.native_app.artifacts[0],
                 processor_mapping=processor_mapping,
             )
 
-            assert_dir_snapshot(deploy_root.relative_to(local_path), snapshot)
+            assert_dir_snapshot(
+                project.deploy_root.relative_to(local_path), os_agnostic_snapshot
+            )
 
 
 @pytest.mark.parametrize(
@@ -416,14 +437,14 @@ def test_process_with_collected_functions(
     ],
 )
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
+    "snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor._execute_in_sandbox",
 )
 def test_package_normalization(
     mock_sandbox,
     package_decl,
     native_app_project_instance,
     native_app_extension_function_raw_data,
-    snapshot,
+    os_agnostic_snapshot,
 ):
 
     with temp_local_dir(minimal_dir_structure) as local_path:
@@ -440,18 +461,16 @@ def test_package_normalization(
             ]
             native_app_extension_function_raw_data["packages"] = package_decl
             mock_sandbox.side_effect = [[native_app_extension_function_raw_data]]
-            deploy_root = Path(local_path, "output/deploy")
-            generated_root = Path(deploy_root, "__generated")
-            SnowparkAnnotationProcessor(
-                project_definition=native_app_project_instance,
+            project = create_native_app_project_model(
+                project_definition=native_app_project_instance.native_app,
                 project_root=local_path,
-                deploy_root=deploy_root,
-                generated_root=generated_root,
-            ).process(
+            )
+            processor = SnowparkAnnotationProcessor(project.get_bundle_context())
+            processor.process(
                 artifact_to_process=native_app_project_instance.native_app.artifacts[0],
                 processor_mapping=processor_mapping,
             )
 
-            dest_file = generated_root / "stagepath" / "main.sql"
+            dest_file = project.generated_root / "snowpark" / "stagepath" / "main.sql"
             assert dest_file.is_file()
-            assert dest_file.read_text(encoding="utf-8") == snapshot
+            assert dest_file.read_text(encoding="utf-8") == os_agnostic_snapshot

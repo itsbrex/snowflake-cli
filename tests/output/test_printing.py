@@ -18,6 +18,7 @@ from textwrap import dedent
 from typing import NamedTuple
 
 import pytest
+from snowflake.cli._app.printing import print_result
 from snowflake.cli.api.output.formats import OutputFormat
 from snowflake.cli.api.output.types import (
     CollectionResult,
@@ -26,8 +27,8 @@ from snowflake.cli.api.output.types import (
     ObjectResult,
     QueryResult,
     SingleQueryResult,
+    StreamResult,
 )
-from snowflake.cli.app.printing import print_result
 
 from tests.testing_utils.conversion import get_output, get_output_as_json
 
@@ -338,6 +339,38 @@ def test_print_with_no_response_json(capsys):
     json_str = get_output(capsys)
     json.loads(json_str)
     assert json_str == "null\n"
+
+
+def test_print_stream_result(capsys):
+    def g():
+        yield MessageResult("1")
+        yield ObjectResult({"2": "3"})
+
+    print_result(StreamResult(g()))
+    assert get_output(capsys) == dedent(
+        """\
+        1
+        +-------------+
+        | key | value |
+        |-----+-------|
+        | 2   | 3     |
+        +-------------+
+        """
+    )
+
+
+def test_print_stream_result_json(capsys):
+    def g():
+        yield MessageResult("1")
+        yield ObjectResult({"2": "3"})
+
+    print_result(StreamResult(g()), output_format=OutputFormat.JSON)
+    output = get_output(capsys)
+    lines = output.splitlines()
+    assert [json.loads(line) for line in lines if line] == [
+        {"message": "1"},
+        {"2": "3"},
+    ]
 
 
 @pytest.fixture

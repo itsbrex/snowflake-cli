@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from unittest import mock
 
 import pytest
 
+from tests_common import IS_WINDOWS
+
 PROJECT_PATH = "demo_na_project"
 
 
+@pytest.mark.skipif(IS_WINDOWS, reason="Needs refactor to run on windows")
 @pytest.mark.parametrize(
     "id_,init_args",
     [
@@ -75,17 +77,17 @@ PROJECT_PATH = "demo_na_project"
     ],
 )
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.init._init_from_template", return_value=None
+    "snowflake.cli._plugins.nativeapp.init._init_from_template", return_value=None
 )
 def test_init_no_template_success(
-    mock_init_from_template, runner, temp_dir, snapshot, id_, init_args
+    mock_init_from_template, runner, temp_dir, os_agnostic_snapshot, id_, init_args
 ):
     args = ["app", "init"]
     args.extend(init_args)
     result = runner.invoke(args)
 
     assert result.exit_code == 0
-    assert result.output == snapshot
+    assert result.output == os_agnostic_snapshot
 
 
 @pytest.mark.parametrize(
@@ -112,14 +114,14 @@ def test_init_no_template_success(
     ],
 )
 @mock.patch(
-    "snowflake.cli.plugins.nativeapp.init._init_from_template", return_value=None
+    "snowflake.cli._plugins.nativeapp.init._init_from_template", return_value=None
 )
 def test_init_no_template_failure(
-    mock_init_from_template, runner, temp_dir, snapshot, id_, init_args
+    mock_init_from_template, runner, temp_dir, os_agnostic_snapshot, id_, init_args
 ):
     args = ["app", "init"]
     args.extend(init_args)
     result = runner.invoke(args)
 
     assert result.exit_code == 1
-    assert result.output == snapshot
+    assert result.output == os_agnostic_snapshot

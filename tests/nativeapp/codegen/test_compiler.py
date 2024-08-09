@@ -12,22 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
 
 import pytest
-from snowflake.cli.api.project.schemas.project_definition import ProjectDefinition
-from snowflake.cli.plugins.nativeapp.codegen.artifact_processor import (
+from snowflake.cli._plugins.nativeapp.codegen.artifact_processor import (
     UnsupportedArtifactProcessorError,
 )
-from snowflake.cli.plugins.nativeapp.codegen.compiler import NativeAppCompiler
-from snowflake.cli.plugins.nativeapp.codegen.snowpark.python_processor import (
+from snowflake.cli._plugins.nativeapp.codegen.compiler import NativeAppCompiler
+from snowflake.cli._plugins.nativeapp.codegen.snowpark.python_processor import (
     SnowparkAnnotationProcessor,
 )
+from snowflake.cli.api.project.schemas.project_definition import (
+    build_project_definition,
+)
+
+from tests.nativeapp.utils import create_native_app_project_model
 
 
 @pytest.fixture()
 def test_proj_def():
-    return ProjectDefinition(
+    return build_project_definition(
         **{
             "definition_version": "1",
             "native_app": {
@@ -55,12 +58,8 @@ def test_proj_def():
 
 @pytest.fixture()
 def test_compiler(test_proj_def):
-    return NativeAppCompiler(
-        project_definition=test_proj_def.native_app,
-        project_root=Path("some/dummy/path"),
-        deploy_root=Path("some/dummy/path"),
-        generated_root=Path("some/dummy/path"),
-    )
+    na_project = create_native_app_project_model(test_proj_def.native_app)
+    return NativeAppCompiler(na_project.get_bundle_context())
 
 
 def test_try_create_processor_returns_none(test_proj_def, test_compiler):
@@ -89,12 +88,10 @@ def test_find_and_execute_processors_exception(test_proj_def, test_compiler):
     test_proj_def.native_app.artifacts = [
         {"dest": "./", "src": "app/*", "processors": ["DUMMY"]}
     ]
-    test_compiler = NativeAppCompiler(
-        project_definition=test_proj_def.native_app,
-        project_root=Path("some/dummy/path"),
-        deploy_root=Path("some/dummy/path"),
-        generated_root=Path("some/dummy/path"),
+    app_pkg = create_native_app_project_model(
+        project_definition=test_proj_def.native_app
     )
+    test_compiler = NativeAppCompiler(app_pkg.get_bundle_context())
 
     with pytest.raises(UnsupportedArtifactProcessorError):
         test_compiler.compile_artifacts()

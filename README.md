@@ -30,18 +30,20 @@ With Snowflake CLI, developers can create, manage, update, and view apps running
 **Note**: Snowflake CLI is in Public Preview (PuPr).
 
 Docs: https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/index.
+
 Quick start: https://quickstarts.snowflake.com/guide/getting-started-with-snowflake-cli
+
 Cheatsheet: https://github.com/Snowflake-Labs/sf-cheatsheets/blob/main/snowflake-cli.md
 
 
 ## Install Snowflake CLI
 
-### Install with pip (PyPi)
+### Install with pipx (PyPi)
 
-Requires Python >= 3.8
+We recommend installing Snowflake CLI in isolated environment using [pipx](https://pipx.pypa.io/stable/). Requires Python >= 3.10
 
 ```bash
-pip install snowflake-cli-labs
+pipx install snowflake-cli-labs
 snow --help
 ```
 
@@ -57,7 +59,7 @@ snow --help
 
 ### Install from source
 
-Requires Python >= 3.8 and git
+Requires Python >= 3.10 and git
 
 ```bash
 git clone https://github.com/snowflakedb/snowflake-cli

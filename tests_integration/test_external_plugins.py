@@ -34,7 +34,7 @@ def install_plugins():
 @pytest.fixture()
 def reset_command_registration_state():
     def _reset_command_registration_state():
-        from snowflake.cli.app.cli_app import _commands_registration
+        from snowflake.cli._app.cli_app import _commands_registration
 
         _commands_registration.reset_running_instance_registration_state()
 
@@ -117,6 +117,8 @@ def test_loading_of_installed_plugins_if_only_one_plugin_is_enabled(
     result_of_top_level_help = runner.invoke_with_config(["--help"])
     assert_that_result_is_successful(result_of_top_level_help)
     _assert_that_no_error_logs(caplog)
+    assert "Loaded external plugin: snowpark-hello" in caplog.messages
+    assert "Loaded external plugin: multilingual-hello" not in caplog.messages
     assert "multilingual-hello" not in result_of_top_level_help.output
 
     result_of_snowpark_hello = runner.invoke_with_connection_json(

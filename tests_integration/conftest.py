@@ -27,8 +27,8 @@ from typing import Any, Dict, List, Optional
 import pytest
 import yaml
 
-from snowflake.cli.api.cli_global_context import cli_context_manager
-from snowflake.cli.app.cli_app import app_factory
+from snowflake.cli.api.cli_global_context import get_cli_context_manager
+from snowflake.cli._app.cli_app import app_factory
 from typer import Typer
 from typer.testing import CliRunner
 
@@ -47,6 +47,7 @@ pytest_plugins = [
 
 TEST_DIR = Path(__file__).parent
 DEFAULT_TEST_CONFIG = "connection_configs.toml"
+WORLD_READABLE_CONFIG = "world_readable.toml"
 
 
 @dataclass
@@ -70,6 +71,9 @@ def test_snowcli_config_provider():
     with tempfile.TemporaryDirectory() as td:
         temp_dst = Path(td) / "config"
         shutil.copytree(TEST_DIR / "config", temp_dst)
+        for config_file in temp_dst.glob("**/*.toml"):
+            if config_file.name != WORLD_READABLE_CONFIG:
+                config_file.chmod(0o600)  # Make config file private
         yield TestConfigProvider(temp_dst)
 
 
@@ -170,7 +174,7 @@ def project_directory(temporary_working_directory, test_root_path):
 
 @pytest.fixture(autouse=True)
 def reset_global_context_after_each_test(request):
-    cli_context_manager.reset()
+    get_cli_context_manager().reset()
     yield
 
 
@@ -179,3 +183,8 @@ def reset_global_context_after_each_test(request):
 @pytest.fixture(autouse=True)
 def isolate_snowflake_home(snowflake_home):
     yield snowflake_home
+
+
+@pytest.fixture(autouse=True)
+def env_setup(monkeypatch):
+    monkeypatch.setenv("SNOWFLAKE_CLI_FEATURES_ENABLE_PROJECT_DEFINITION_V2", "true")

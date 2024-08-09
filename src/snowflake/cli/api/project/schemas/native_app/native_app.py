@@ -18,8 +18,11 @@ import re
 from typing import List, Optional, Union
 
 from pydantic import Field, field_validator
-from snowflake.cli.api.project.schemas.native_app.application import Application
-from snowflake.cli.api.project.schemas.native_app.package import Package
+from snowflake.cli.api.project.schemas.native_app.application import (
+    Application,
+    ApplicationV11,
+)
+from snowflake.cli.api.project.schemas.native_app.package import Package, PackageV11
 from snowflake.cli.api.project.schemas.native_app.path_mapping import PathMapping
 from snowflake.cli.api.project.schemas.updatable_model import UpdatableModel
 from snowflake.cli.api.project.util import (
@@ -34,8 +37,12 @@ class NativeApp(UpdatableModel):
     artifacts: List[Union[PathMapping, str]] = Field(
         title="List of file source and destination pairs to add to the deploy root",
     )
+    bundle_root: Optional[str] = Field(
+        title="Folder at the root of your project where artifacts necessary to perform the bundle step are stored.",
+        default="output/bundle/",
+    )
     deploy_root: Optional[str] = Field(
-        title="Folder at the root of your project where the build step copies the artifacts.",
+        title="Folder at the root of your project where the bundle step copies the artifacts.",
         default="output/deploy/",
     )
     generated_root: Optional[str] = Field(
@@ -76,3 +83,11 @@ class NativeApp(UpdatableModel):
                 transformed_artifacts.append(PathMapping(src=artifact))
 
         return transformed_artifacts
+
+
+class NativeAppV11(NativeApp):
+    # templated defaults are only supported with version 1.1+
+    package: Optional[PackageV11] = Field(title="PackageSchema", default=PackageV11())
+    application: Optional[ApplicationV11] = Field(
+        title="Application info", default=ApplicationV11()
+    )

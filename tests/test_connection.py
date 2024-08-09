@@ -23,8 +23,15 @@ import pytest
 import tomlkit
 from snowflake.cli.api.constants import ObjectType
 
+from tests_common import IS_WINDOWS
 
-def test_new_connection_can_be_added(runner, snapshot):
+if IS_WINDOWS:
+    pytest.skip("Requires further refactor to work on Windows", allow_module_level=True)
+
+
+def test_new_connection_can_be_added(
+    runner, os_agnostic_snapshot, named_temporary_file
+):
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         result = runner.invoke_with_config_file(
             tmp_file.name,
@@ -45,10 +52,10 @@ def test_new_connection_can_be_added(runner, snapshot):
         )
         content = tmp_file.read()
     assert result.exit_code == 0, result.output
-    assert content == snapshot
+    assert content == os_agnostic_snapshot
 
 
-def test_new_connection_can_be_added_as_default(runner, snapshot):
+def test_new_connection_can_be_added_as_default(runner, os_agnostic_snapshot):
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         result = runner.invoke_with_config_file(
             tmp_file.name,
@@ -68,10 +75,12 @@ def test_new_connection_can_be_added_as_default(runner, snapshot):
         )
         content = tmp_file.read()
     assert result.exit_code == 0, result.output
-    assert content == snapshot
+    assert content == os_agnostic_snapshot
 
 
-def test_new_connection_with_jwt_auth(runner, snapshot):
+@mock.patch("os.path.exists")
+def test_new_connection_with_jwt_auth(mock_os, runner, os_agnostic_snapshot):
+    mock_os.return_value = True
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         result = runner.invoke_with_config_file(
             tmp_file.name,
@@ -92,7 +101,41 @@ def test_new_connection_with_jwt_auth(runner, snapshot):
         )
         content = tmp_file.read()
     assert result.exit_code == 0, result.output
-    assert content == snapshot
+    assert content == os_agnostic_snapshot
+
+
+def test_if_whitespaces_are_stripped_from_connection_name(runner, os_agnostic_snapshot):
+    with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
+        result = runner.invoke_with_config_file(
+            tmp_file.name,
+            [
+                "connection",
+                "add",
+                "--connection-name",
+                "       whitespaceTest     ",
+                "--username",
+                "userName            ",
+                "--account",
+                "             accName",
+            ],
+            input="123\n some role    \n some warehouse\n foo \n bar     \n baz \n    12345 \n Kaszuby \n foo   \n \n",
+        )
+        content = tmp_file.read()
+
+        assert result.exit_code == 0, result.output
+        assert content == os_agnostic_snapshot
+
+        connections_list = runner.invoke_with_config_file(
+            tmp_file.name, ["connection", "list", "--format", "json"]
+        )
+        assert connections_list.exit_code == 0
+        assert connections_list.output == os_agnostic_snapshot
+
+        set_as_default = runner.invoke_with_config_file(
+            tmp_file.name, ["connection", "set-default", "whitespaceTest"]
+        )
+        assert set_as_default.exit_code == 0
+        assert "Default connection set to: whitespaceTest" in set_as_default.output
 
 
 def test_port_has_cannot_be_string(runner):
@@ -137,7 +180,53 @@ def test_port_has_cannot_be_float(runner):
     assert "Value of port must be integer" in result.output
 
 
-def test_new_connection_add_prompt_handles_default_values(runner, snapshot):
+@pytest.mark.parametrize(
+    "selected_option",
+    [9, 10],  # 9 - private_key_path prompt, 10 - token_file_path prompt
+)
+def test_file_paths_have_to_exist_when_given_in_prompt(selected_option, runner):
+    result = _run_connection_add_with_path_provided_as_prompt(
+        "~/path/to/file", selected_option, runner
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Path ~/path/to/file does not exist." in result.output
+
+
+@pytest.mark.parametrize(
+    "selected_option", [9, 10]
+)  # 9 - private_key_path prompt, 10 - token_file_path prompt
+def test_connection_can_be_added_with_existing_paths_in_prompt(selected_option, runner):
+    with NamedTemporaryFile("w+") as tmp_path:
+        result = _run_connection_add_with_path_provided_as_prompt(
+            tmp_path.name, selected_option, runner
+        )
+    assert result.exit_code == 0, result.output
+    assert "Wrote new connection connName to" in result.output
+
+
+@pytest.mark.parametrize("selected_option", ["-k", "-t"])
+def test_file_paths_have_to_exist_when_given_in_arguments(selected_option, runner):
+    result = _run_connection_add_with_path_provided_as_argument(
+        "~/path/to/file", selected_option, runner
+    )
+    assert result.exit_code == 1, result.output
+    assert "Path ~/path/to/file does not exist." in result.output
+
+
+@pytest.mark.parametrize("selected_option", ["-k", "-t"])
+def test_connection_can_be_added_with_existing_paths_in_arguments(
+    selected_option, runner
+):
+    with NamedTemporaryFile("w+") as tmp_path:
+        result = _run_connection_add_with_path_provided_as_argument(
+            tmp_path.name, selected_option, runner
+        )
+    assert result.exit_code == 0, result.output
+    assert "Wrote new connection conn1 to" in result.output
+
+
+def test_new_connection_add_prompt_handles_default_values(runner, os_agnostic_snapshot):
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         result = runner.invoke_with_config_file(
             tmp_file.name,
@@ -149,10 +238,12 @@ def test_new_connection_add_prompt_handles_default_values(runner, snapshot):
         )
         content = tmp_file.read()
     assert result.exit_code == 0, result.output
-    assert content == snapshot
+    assert content == os_agnostic_snapshot
 
 
-def test_new_connection_add_prompt_handles_prompt_override(runner, snapshot):
+def test_new_connection_add_prompt_handles_prompt_override(
+    runner, os_agnostic_snapshot
+):
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         result = runner.invoke_with_config_file(
             tmp_file.name,
@@ -164,7 +255,7 @@ def test_new_connection_add_prompt_handles_prompt_override(runner, snapshot):
         )
         content = tmp_file.read()
     assert result.exit_code == 0, result.output
-    assert content == snapshot
+    assert content == os_agnostic_snapshot
 
 
 def test_fails_if_existing_connection(runner):
@@ -198,7 +289,7 @@ def test_fails_if_existing_connection(runner):
     assert "Connection conn2 already exists  " in result.output
 
 
-@mock.patch("snowflake.cli.plugins.connection.commands.get_default_connection_name")
+@mock.patch("snowflake.cli._plugins.connection.commands.get_default_connection_name")
 def test_lists_connection_information(mock_get_default_conn_name, runner):
     mock_get_default_conn_name.return_value = "empty"
     result = runner.invoke(["connection", "list", "--format", "json"])
@@ -249,7 +340,7 @@ def test_lists_connection_information(mock_get_default_conn_name, runner):
     },
     clear=True,
 )
-@mock.patch("snowflake.cli.plugins.connection.commands.get_default_connection_name")
+@mock.patch("snowflake.cli._plugins.connection.commands.get_default_connection_name")
 def test_connection_list_does_not_print_too_many_env_variables(
     mock_get_default_conn_name, runner
 ):
@@ -292,7 +383,7 @@ def test_connection_list_does_not_print_too_many_env_variables(
     ]
 
 
-def test_second_connection_not_update_default_connection(runner, snapshot):
+def test_second_connection_not_update_default_connection(runner, os_agnostic_snapshot):
     with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
         tmp_file.write(
             dedent(
@@ -326,11 +417,11 @@ def test_second_connection_not_update_default_connection(runner, snapshot):
         content = tmp_file.read()
 
         assert result.exit_code == 0, result.output
-        assert content == snapshot
+        assert content == os_agnostic_snapshot
 
 
-@mock.patch("snowflake.cli.plugins.connection.commands.ObjectManager")
-@mock.patch("snowflake.cli.app.snow_connector.connect_to_snowflake")
+@mock.patch("snowflake.cli._plugins.connection.commands.ObjectManager")
+@mock.patch("snowflake.cli._app.snow_connector.connect_to_snowflake")
 def test_connection_test(mock_connect, mock_om, runner):
     result = runner.invoke(
         ["connection", "test", "-c", "full", "--diag-log-path", "/tmp"]
@@ -352,6 +443,7 @@ def test_connection_test(mock_connect, mock_om, runner):
         password=None,
         authenticator=None,
         private_key_path=None,
+        token_file_path=None,
         session_token=None,
         master_token=None,
         database=None,
@@ -536,6 +628,33 @@ def test_session_and_master_tokens(mock_connector, mock_ctx, runner):
     )
 
 
+@mock.patch("snowflake.connector.connect")
+def test_token_file_path_tokens(mock_connector, mock_ctx, runner, temp_dir):
+    ctx = mock_ctx()
+    mock_connector.return_value = ctx
+
+    token_file = Path(temp_dir) / "token.file"
+    token_file.touch()
+
+    result = runner.invoke(
+        [
+            "object",
+            "list",
+            "warehouse",
+            "--temporary-connection",
+            "--token-file-path",
+            token_file,
+        ]
+    )
+
+    assert result.exit_code == 0
+    mock_connector.assert_called_once_with(
+        application="SNOWCLI.OBJECT.LIST",
+        token_file_path=str(token_file),
+        application_name="snowcli",
+    )
+
+
 @mock.patch.dict(
     os.environ,
     {
@@ -544,7 +663,7 @@ def test_session_and_master_tokens(mock_connector, mock_ctx, runner):
     clear=True,
 )
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.app.snow_connector._load_pem_to_der")
+@mock.patch("snowflake.cli._app.snow_connector._load_pem_to_der")
 def test_key_pair_authentication_from_config(
     mock_load, mock_connector, mock_ctx, temp_dir, runner
 ):
@@ -591,7 +710,7 @@ def test_key_pair_authentication_from_config(
     ],
 )
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.connection.commands.ObjectManager")
+@mock.patch("snowflake.cli._plugins.connection.commands.ObjectManager")
 def test_mfa_passcode(_, mock_connect, runner, command):
     command.extend(["--mfa-passcode", "123"])
     result = runner.invoke(command)
@@ -646,7 +765,7 @@ def test_if_password_callback_is_called_only_once_from_arguments(runner):
     ],
 )
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.connection.commands.ObjectManager")
+@mock.patch("snowflake.cli._plugins.connection.commands.ObjectManager")
 def test_mfa_passcode_from_prompt(_, mock_connect, runner, command):
     command.append("--mfa-passcode")
     result = runner.invoke(command, input="123")
@@ -845,8 +964,8 @@ def test_set_default_connection(runner):
         assert config["default_connection_name"] == "conn2"
 
 
-@mock.patch("snowflake.cli.plugins.connection.commands.ObjectManager")
-@mock.patch("snowflake.cli.app.snow_connector.connect_to_snowflake")
+@mock.patch("snowflake.cli._plugins.connection.commands.ObjectManager")
+@mock.patch("snowflake.cli._app.snow_connector.connect_to_snowflake")
 def test_connection_test_diag_report(mock_connect, mock_om, runner):
     result = runner.invoke(
         ["connection", "test", "-c", "full", "--enable-diag", "--diag-log-path", "/tmp"]
@@ -867,6 +986,7 @@ def test_connection_test_diag_report(mock_connect, mock_om, runner):
         password=None,
         authenticator=None,
         private_key_path=None,
+        token_file_path=None,
         session_token=None,
         master_token=None,
         database=None,
@@ -874,3 +994,45 @@ def test_connection_test_diag_report(mock_connect, mock_om, runner):
         role=None,
         warehouse=None,
     )
+
+
+def _run_connection_add_with_path_provided_as_argument(
+    path: str, selected_option: str, runner
+):
+    with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
+        result = runner.invoke_with_config_file(
+            tmp_file.name,
+            [
+                "connection",
+                "add",
+                "--connection-name",
+                "conn1",
+                "--username",
+                "user1",
+                "--account",
+                "account1",
+                "--port",
+                "12378",
+                selected_option,
+                path,
+            ],
+        )
+    return result
+
+
+def _run_connection_add_with_path_provided_as_prompt(
+    path: str, selected_option: int, runner
+):
+    with NamedTemporaryFile("w+", suffix=".toml") as tmp_file:
+        result = runner.invoke_with_config_file(
+            tmp_file.name,
+            [
+                "connection",
+                "add",
+            ],
+            input="connName\naccName\nuserName\npassword{}{}".format(
+                selected_option * "\n", path
+            ),
+        )
+
+    return result

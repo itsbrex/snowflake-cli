@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -19,16 +20,23 @@ from unittest import mock
 from unittest.mock import patch
 
 import pytest
-import snowflake.cli.plugins.snowpark.models
-import snowflake.cli.plugins.snowpark.package.utils
+import snowflake.cli._plugins.snowpark.models
+import snowflake.cli._plugins.snowpark.package.utils
+from snowflake.cli._plugins.connection.util import (
+    LOCAL_DEPLOYMENT_REGION,
+    get_context,
+    get_host_region,
+    guess_regioned_host_from_allowlist,
+    make_snowsight_url,
+)
+from snowflake.cli._plugins.snowpark import package_utils
+from snowflake.cli._plugins.snowpark.package.anaconda_packages import (
+    AnacondaPackages,
+)
 from snowflake.cli.api.project.util import identifier_for_url
 from snowflake.cli.api.secure_path import SecurePath
 from snowflake.cli.api.utils import path_utils
-from snowflake.cli.plugins.connection.util import make_snowsight_url
-from snowflake.cli.plugins.snowpark import package_utils
-from snowflake.cli.plugins.snowpark.package.anaconda_packages import (
-    AnacondaPackages,
-)
+from snowflake.connector import SnowflakeConnection
 
 from tests.test_data import test_data
 
@@ -38,8 +46,10 @@ def test_prepare_app_zip(
     app_zip: str,
     temp_directory_for_app_zip: str,
 ):
-    result = snowflake.cli.plugins.snowpark.package.utils.prepare_app_zip(
-        SecurePath(app_zip), SecurePath(temp_directory_for_app_zip)
+    result = (
+        snowflake.cli._plugins.snowpark.package.utils.prepare_app_zip(  # noqa: SLF001
+            SecurePath(app_zip), SecurePath(temp_directory_for_app_zip)
+        )
     )
     assert str(result.path) == os.path.join(
         temp_directory_for_app_zip, Path(app_zip).name
@@ -50,7 +60,7 @@ def test_prepare_app_zip_if_exception_is_raised_if_no_source(
     temp_directory_for_app_zip,
 ):
     with pytest.raises(FileNotFoundError) as expected_error:
-        snowflake.cli.plugins.snowpark.package.utils.prepare_app_zip(
+        snowflake.cli._plugins.snowpark.package.utils.prepare_app_zip(  # noqa: SLF001
             SecurePath("/non/existent/path"), SecurePath(temp_directory_for_app_zip)
         )
 
@@ -60,7 +70,7 @@ def test_prepare_app_zip_if_exception_is_raised_if_no_source(
 
 def test_prepare_app_zip_if_exception_is_raised_if_no_dst(app_zip):
     with pytest.raises(FileNotFoundError) as expected_error:
-        snowflake.cli.plugins.snowpark.package.utils.prepare_app_zip(
+        snowflake.cli._plugins.snowpark.package.utils.prepare_app_zip(  # noqa: SLF001
             SecurePath(app_zip), SecurePath("/non/existent/path")
         )
 
@@ -102,7 +112,7 @@ def test_parse_requirements_with_nonexistent_file(temp_dir):
         ),
     ],
 )
-@mock.patch("snowflake.cli.plugins.snowpark.package_utils.SecurePath.read_text")
+@mock.patch("snowflake.cli._plugins.snowpark.package_utils.SecurePath.read_text")
 def test_parse_requirements_corner_cases(
     mock_file, contents, expected, correct_requirements_snowflake_txt
 ):
@@ -150,11 +160,11 @@ def test_path_resolver(mock_system, argument, expected):
     assert path_utils.path_resolver(argument) == expected
 
 
-@patch("snowflake.cli.plugins.snowpark.package_utils.pip_wheel")
+@patch("snowflake.cli._plugins.snowpark.package_utils.pip_wheel")
 def test_pip_fail_message(mock_installer, correct_requirements_txt, caplog):
     mock_installer.return_value = 42
 
-    with caplog.at_level(logging.INFO, "snowflake.cli.plugins.snowpark.package_utils"):
+    with caplog.at_level(logging.INFO, "snowflake.cli._plugins.snowpark.package_utils"):
         requirements = package_utils.parse_requirements(
             SecurePath(correct_requirements_txt)
         )
@@ -181,9 +191,9 @@ def test_identifier_for_url(identifier, expected):
     assert identifier_for_url(identifier) == expected
 
 
-@patch("snowflake.cli.plugins.connection.util.get_account")
-@patch("snowflake.cli.plugins.connection.util.get_context")
-@patch("snowflake.cli.plugins.connection.util.get_snowsight_host")
+@patch("snowflake.cli._plugins.connection.util.get_account")
+@patch("snowflake.cli._plugins.connection.util.get_context")
+@patch("snowflake.cli._plugins.connection.util.get_snowsight_host")
 @pytest.mark.parametrize(
     "context, account, path, expected",
     [
@@ -221,3 +231,79 @@ def test_make_snowsight_url(
     get_account.return_value = account
     actual = make_snowsight_url(None, path)  # all uses of conn are mocked
     assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "allowlist, expected",
+    [
+        (
+            [
+                {
+                    "host": "myacct.x.y.z.snowflakecomputing.com",
+                    "type": "SNOWFLAKE_DEPLOYMENT",
+                },
+                {
+                    "host": "myacct.nonregioned.snowflakecomputing.com",
+                    "type": "SNOWFLAKE_DEPLOYMENT",
+                },
+                {"type": "unrelated"},
+            ],
+            "myacct.x.y.z.snowflakecomputing.com",
+        ),
+        (
+            [
+                {"type": "unrelated"},
+            ],
+            None,
+        ),
+    ],
+)
+def test_guess_regioned_host_from_allowlist(allowlist, expected, mock_cursor):
+    mock_conn = mock.MagicMock(spec=SnowflakeConnection)
+    mock_conn.execute_string.return_value = (
+        None,
+        mock_cursor([{"SYSTEM$ALLOWLIST()": json.dumps(allowlist)}], []),
+    )
+    assert guess_regioned_host_from_allowlist(mock_conn) == expected
+
+
+@patch("snowflake.cli._plugins.connection.util.is_regionless_redirect")
+@patch("snowflake.cli._plugins.connection.util.guess_regioned_host_from_allowlist")
+def test_get_context_non_regionless_uses_region(
+    guess_regioned_host_from_allowlist, is_regionless_redirect
+):
+    mock_conn = mock.MagicMock(spec=SnowflakeConnection)
+    mock_conn.host = "myacct.regionless.snowflakecomputing.com"
+    guess_regioned_host_from_allowlist.return_value = (
+        "myacct.x.y.z.snowflakecomputing.com"
+    )
+    is_regionless_redirect.return_value = False
+    assert get_context(mock_conn) == "x.y.z"
+
+
+@patch("snowflake.cli._plugins.connection.util.is_regionless_redirect")
+@patch("snowflake.cli._plugins.connection.util.guess_regioned_host_from_allowlist")
+def test_get_context_local_non_regionless_gets_local_region(
+    guess_regioned_host_from_allowlist, is_regionless_redirect
+):
+    mock_conn = mock.MagicMock(spec=SnowflakeConnection)
+    mock_conn.host = "some.dns.local"
+    is_regionless_redirect.return_value = False
+    assert get_host_region(mock_conn.host) == LOCAL_DEPLOYMENT_REGION
+    assert get_context(mock_conn) == LOCAL_DEPLOYMENT_REGION
+    guess_regioned_host_from_allowlist.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("some.dns.local", LOCAL_DEPLOYMENT_REGION),
+        ("org-acct.mydns.snowflakecomputing.com", None),
+        ("account.x.us-west-2.aws.snowflakecomputing.com", "x.us-west-2.aws"),
+        ("naf_test_pc.us-west-2.snowflakecomputing.com", None),
+        ("test_account.az.int.snowflakecomputing.com", None),
+        ("frozenweb.prod3.external-zone.snowflakecomputing.com", None),
+    ],
+)
+def test_get_host_region(host, expected):
+    assert get_host_region(host) == expected

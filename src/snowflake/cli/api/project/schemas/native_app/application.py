@@ -28,7 +28,7 @@ class SqlScriptHookType(UpdatableModel):
 
 
 # Currently sql_script is the only supported hook type. Change to a Union once other hook types are added
-ApplicationPostDeployHook = SqlScriptHookType
+PostDeployHook = SqlScriptHookType
 
 
 class Application(UpdatableModel):
@@ -45,10 +45,18 @@ class Application(UpdatableModel):
         default=None,
     )
     debug: Optional[bool] = Field(
-        title="Whether to enable debug mode when using a named stage to create an application object",
-        default=True,
+        title="When set, forces debug_mode on/off for the deployed application object",
+        default=None,
     )
-    post_deploy: Optional[List[ApplicationPostDeployHook]] = Field(
+    post_deploy: Optional[List[PostDeployHook]] = Field(
         title="Actions that will be executed after the application object is created/upgraded",
         default=None,
+    )
+
+
+class ApplicationV11(Application):
+    # Templated defaults only supported in v1.1+
+    name: Optional[str] = Field(
+        title="Name of the application object created when you run the snow app run command",
+        default="<% fn.id_concat(ctx.native_app.name, '_', fn.clean_id(fn.get_username('unknown_user'))) %>",
     )

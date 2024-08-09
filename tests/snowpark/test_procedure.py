@@ -20,7 +20,14 @@ from unittest.mock import call
 
 import pytest
 from snowflake.cli.api.constants import ObjectType
+from snowflake.cli.api.errno import DOES_NOT_EXIST_OR_NOT_AUTHORIZED
+from snowflake.cli.api.identifiers import FQN
 from snowflake.connector import ProgrammingError
+
+from tests_common import IS_WINDOWS
+
+if IS_WINDOWS:
+    pytest.skip("Requires further refactor to work on Windows", allow_module_level=True)
 
 
 def test_deploy_function_no_procedure(runner, project_directory):
@@ -36,8 +43,8 @@ def test_deploy_function_no_procedure(runner, project_directory):
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure(
     mock_om_show,
     mock_om_describe,
@@ -47,7 +54,9 @@ def test_deploy_procedure(
     project_directory,
 ):
 
-    mock_om_describe.side_effect = ProgrammingError("does not exist or not authorized")
+    mock_om_describe.side_effect = ProgrammingError(
+        errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED
+    )
     ctx = mock_ctx()
     mock_conn.return_value = ctx
 
@@ -67,15 +76,15 @@ def test_deploy_procedure(
         ]
     )
     assert ctx.get_queries() == [
-        "create stage if not exists MockDatabase.MockSchema.dev_deployment comment='deployments managed by Snowflake CLI'",
+        "create stage if not exists IDENTIFIER('MockDatabase.MockSchema.dev_deployment') comment='deployments managed by Snowflake CLI'",
         f"put file://{Path(tmp).resolve()}/app.zip @MockDatabase.MockSchema.dev_deployment/my_snowpark_project auto_compress=false parallel=4 overwrite=True",
         dedent(
             """\
-            create or replace procedure MockDatabase.MockSchema.procedureName(name string)
+            create or replace procedure IDENTIFIER('MockDatabase.MockSchema.procedureName')(name string)
             copy grants
             returns string
             language python
-            runtime_version=3.8
+            runtime_version=3.10
             imports=('@MockDatabase.MockSchema.dev_deployment/my_snowpark_project/app.zip')
             handler='hello'
             packages=()
@@ -83,7 +92,7 @@ def test_deploy_procedure(
         ).strip(),
         dedent(
             """\
-            create or replace procedure MockDatabase.MockSchema.test()
+            create or replace procedure IDENTIFIER('MockDatabase.MockSchema.test')()
             copy grants
             returns string
             language python
@@ -97,8 +106,8 @@ def test_deploy_procedure(
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_with_external_access(
     mock_om_show,
     mock_om_describe,
@@ -107,7 +116,9 @@ def test_deploy_procedure_with_external_access(
     mock_ctx,
     project_directory,
 ):
-    mock_om_describe.side_effect = ProgrammingError("does not exist or not authorized")
+    mock_om_describe.side_effect = ProgrammingError(
+        errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED
+    )
     mock_om_show.return_value = [
         {"name": "external_1", "type": "EXTERNAL_ACCESS"},
         {"name": "external_2", "type": "EXTERNAL_ACCESS"},
@@ -129,21 +140,21 @@ def test_deploy_procedure_with_external_access(
         [
             call(
                 object_type=str(ObjectType.PROCEDURE),
-                name="MockDatabase.MockSchema.procedureName(string)",
+                fqn=FQN.from_string("MockDatabase.MockSchema.procedureName(string)"),
             ),
         ]
     )
     assert ctx.get_queries() == [
-        "create stage if not exists MockDatabase.MockSchema.dev_deployment comment='deployments managed by Snowflake CLI'",
+        "create stage if not exists IDENTIFIER('MockDatabase.MockSchema.dev_deployment') comment='deployments managed by Snowflake CLI'",
         f"put file://{Path(project_dir).resolve()}/app.zip @MockDatabase.MockSchema.dev_deployment/my_snowpark_project"
         f" auto_compress=false parallel=4 overwrite=True",
         dedent(
             """\
-            create or replace procedure MockDatabase.MockSchema.procedureName(name string)
+            create or replace procedure IDENTIFIER('MockDatabase.MockSchema.procedureName')(name string)
             copy grants
             returns string
             language python
-            runtime_version=3.8
+            runtime_version=3.10
             imports=('@MockDatabase.MockSchema.dev_deployment/my_snowpark_project/app.zip')
             handler='app.hello'
             packages=()
@@ -155,8 +166,8 @@ def test_deploy_procedure_with_external_access(
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_secrets_without_external_access(
     mock_om_show,
     mock_om_describe,
@@ -164,7 +175,7 @@ def test_deploy_procedure_secrets_without_external_access(
     runner,
     mock_ctx,
     project_directory,
-    snapshot,
+    os_agnostic_snapshot,
 ):
     ctx = mock_ctx()
     mock_conn.return_value = ctx
@@ -184,12 +195,12 @@ def test_deploy_procedure_secrets_without_external_access(
         )
 
     assert result.exit_code == 1, result.output
-    assert result.output == snapshot
+    assert result.output == os_agnostic_snapshot
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_fails_if_integration_does_not_exists(
     mock_om_show,
     mock_om_describe,
@@ -197,7 +208,7 @@ def test_deploy_procedure_fails_if_integration_does_not_exists(
     runner,
     mock_ctx,
     project_directory,
-    snapshot,
+    os_agnostic_snapshot,
 ):
     ctx = mock_ctx()
     mock_conn.return_value = ctx
@@ -216,15 +227,15 @@ def test_deploy_procedure_fails_if_integration_does_not_exists(
         )
 
     assert result.exit_code == 1, result.output
-    assert result.output == snapshot
+    assert result.output == os_agnostic_snapshot
 
 
 @mock.patch(
-    "snowflake.cli.plugins.snowpark.commands._check_if_all_defined_integrations_exists"
+    "snowflake.cli._plugins.snowpark.commands._check_if_all_defined_integrations_exists"
 )
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_fails_if_object_exists_and_no_replace(
     mock_om_show,
     mock_om_describe,
@@ -234,7 +245,7 @@ def test_deploy_procedure_fails_if_object_exists_and_no_replace(
     mock_cursor,
     mock_ctx,
     project_directory,
-    snapshot,
+    os_agnostic_snapshot,
 ):
     mock_om_describe.return_value = mock_cursor(
         [
@@ -251,12 +262,12 @@ def test_deploy_procedure_fails_if_object_exists_and_no_replace(
         result = runner.invoke(["snowpark", "deploy"])
 
     assert result.exit_code == 1
-    assert result.output == snapshot
+    assert result.output == os_agnostic_snapshot
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_replace_nothing_to_update(
     mock_om_show,
     mock_om_describe,
@@ -265,6 +276,7 @@ def test_deploy_procedure_replace_nothing_to_update(
     mock_cursor,
     mock_ctx,
     project_directory,
+    caplog,
 ):
     mock_om_describe.side_effect = [
         mock_cursor(
@@ -282,6 +294,7 @@ def test_deploy_procedure_replace_nothing_to_update(
                 ("handler", "test"),
                 ("returns", "string"),
                 ("imports", "dev_deployment/my_snowpark_project/app.zip"),
+                ("runtime_version", "3.10"),
             ],
             columns=["key", "value"],
         ),
@@ -308,8 +321,8 @@ def test_deploy_procedure_replace_nothing_to_update(
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_replace_updates_single_object(
     mock_om_show,
     mock_om_describe,
@@ -361,8 +374,8 @@ def test_deploy_procedure_replace_updates_single_object(
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_replace_creates_missing_object(
     mock_om_show,
     mock_om_describe,
@@ -382,7 +395,7 @@ def test_deploy_procedure_replace_creates_missing_object(
             ],
             columns=["key", "value"],
         ),
-        ProgrammingError("does not exist or not authorized"),
+        ProgrammingError(errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED),
     ]
     ctx = mock_ctx()
     mock_conn.return_value = ctx
@@ -406,8 +419,8 @@ def test_deploy_procedure_replace_creates_missing_object(
 
 
 @mock.patch("snowflake.connector.connect")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.describe")
-@mock.patch("snowflake.cli.plugins.snowpark.commands.ObjectManager.show")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.describe")
+@mock.patch("snowflake.cli._plugins.snowpark.commands.ObjectManager.show")
 def test_deploy_procedure_fully_qualified_name(
     mock_om_show,
     mock_om_describe,
@@ -416,18 +429,18 @@ def test_deploy_procedure_fully_qualified_name(
     mock_ctx,
     project_directory,
     alter_snowflake_yml,
-    snapshot,
+    os_agnostic_snapshot,
 ):
     number_of_procedures_in_projects = 6
     mock_om_describe.side_effect = [
-        ProgrammingError("does not exist or not authorized"),
+        ProgrammingError(errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED),
     ] * number_of_procedures_in_projects
     ctx = mock_ctx()
     mock_conn.return_value = ctx
 
     with project_directory("snowpark_procedure_fully_qualified_name") as tmp_dir:
         result = runner.invoke(["snowpark", "deploy"])
-        assert result.output == snapshot(name="database error")
+        assert result.output == os_agnostic_snapshot(name="database error")
 
         alter_snowflake_yml(
             tmp_dir / "snowflake.yml",
@@ -435,7 +448,7 @@ def test_deploy_procedure_fully_qualified_name(
             value="custom_schema.fqn_procedure_error",
         )
         result = runner.invoke(["snowpark", "deploy"])
-        assert result.output == snapshot(name="schema error")
+        assert result.output == os_agnostic_snapshot(name="schema error")
 
         alter_snowflake_yml(
             tmp_dir / "snowflake.yml",
@@ -444,7 +457,7 @@ def test_deploy_procedure_fully_qualified_name(
         )
         result = runner.invoke(["snowpark", "deploy"])
         assert result.exit_code == 0
-        assert result.output == snapshot(name="ok")
+        assert result.output == os_agnostic_snapshot(name="ok")
 
 
 @mock.patch("snowflake.connector.connect")
@@ -462,16 +475,6 @@ def test_execute_procedure(mock_connector, runner, mock_ctx):
 
     assert result.exit_code == 0, result.output
     assert ctx.get_query() == "call procedureName(42, 'string')"
-
-
-@mock.patch(
-    "snowflake.cli.api.commands.project_initialisation._create_project_template"
-)
-def test_init_procedure(mock_create_project_template, runner, temp_dir):
-    runner.invoke(["snowpark", "init", "my_project2"])
-    mock_create_project_template.assert_called_once_with(
-        "default_snowpark", project_directory="my_project2"
-    )
 
 
 @mock.patch("snowflake.connector.connect")

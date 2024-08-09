@@ -11,39 +11,45 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from textwrap import dedent
+from typing import Optional
 from unittest import mock
 from unittest.mock import call
 
 import pytest
-from snowflake.cli.api.project.definition_manager import DefinitionManager
-from snowflake.cli.plugins.nativeapp.artifacts import BundleMap
-from snowflake.cli.plugins.nativeapp.constants import (
+from click import ClickException
+from snowflake.cli._plugins.nativeapp.artifacts import BundleMap
+from snowflake.cli._plugins.nativeapp.constants import (
     LOOSE_FILES_MAGIC_VERSION,
     NAME_COL,
     SPECIAL_COMMENT,
     SPECIAL_COMMENT_OLD,
 )
-from snowflake.cli.plugins.nativeapp.exceptions import (
+from snowflake.cli._plugins.nativeapp.exceptions import (
     ApplicationPackageAlreadyExistsError,
     ApplicationPackageDoesNotExistError,
+    NoEventTableForAccount,
     SetupScriptFailedValidation,
     UnexpectedOwnerError,
 )
-from snowflake.cli.plugins.nativeapp.manager import (
+from snowflake.cli._plugins.nativeapp.manager import (
     NativeAppManager,
     SnowflakeSQLExecutionError,
     _get_stage_paths_to_sync,
     ensure_correct_owner,
 )
-from snowflake.cli.plugins.stage.diff import (
+from snowflake.cli._plugins.stage.diff import (
     DiffResult,
     StagePath,
 )
+from snowflake.cli.api.errno import DOES_NOT_EXIST_OR_NOT_AUTHORIZED
+from snowflake.cli.api.project.definition_manager import DefinitionManager
 from snowflake.connector import ProgrammingError
 from snowflake.connector.cursor import DictCursor
 
@@ -52,6 +58,7 @@ from tests.nativeapp.patch_utils import (
     mock_get_app_pkg_distribution_in_sf,
 )
 from tests.nativeapp.utils import (
+    NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE,
     NATIVEAPP_MANAGER_BUILD_BUNDLE,
     NATIVEAPP_MANAGER_DEPLOY,
     NATIVEAPP_MANAGER_EXECUTE,
@@ -60,9 +67,11 @@ from tests.nativeapp.utils import (
     NATIVEAPP_MODULE,
     mock_execute_helper,
     mock_snowflake_yml_file,
+    quoted_override_yml_file,
     touch,
 )
 from tests.testing_utils.files_and_dirs import create_named_file
+from tests.testing_utils.fixtures import MockConnectionCtx
 
 mock_project_definition_override = {
     "native_app": {
@@ -78,8 +87,8 @@ mock_project_definition_override = {
 }
 
 
-def _get_na_manager():
-    dm = DefinitionManager()
+def _get_na_manager(working_dir: Optional[str] = None):
+    dm = DefinitionManager(working_dir)
     return NativeAppManager(
         project_definition=dm.project_definition.native_app,
         project_root=dm.project_root,
@@ -252,7 +261,8 @@ def test_get_app_pkg_distribution_in_snowflake_throws_programming_error(
             (None, mock.call("use role package_role")),
             (
                 ProgrammingError(
-                    msg="Application package app_pkg does not exist or not authorized."
+                    msg="Application package app_pkg does not exist or not authorized.",
+                    errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED,
                 ),
                 mock.call("describe application package app_pkg"),
             ),
@@ -577,14 +587,41 @@ def test_get_existing_app_pkg_info_app_pkg_does_not_exist(
     assert mock_execute.mock_calls == expected
 
 
-@mock.patch("snowflake.cli.plugins.connection.util.get_context")
-@mock.patch("snowflake.cli.plugins.connection.util.get_account")
-@mock.patch("snowflake.cli.plugins.connection.util.get_snowsight_host")
+# With connection warehouse, with PDF warehouse
+# Without connection warehouse, with PDF warehouse
+@mock.patch("snowflake.cli._plugins.connection.util.get_context")
+@mock.patch("snowflake.cli._plugins.connection.util.get_account")
+@mock.patch("snowflake.cli._plugins.connection.util.get_snowsight_host")
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
 @mock_connection()
-def test_get_snowsight_url(
-    mock_conn, mock_snowsight_host, mock_account, mock_context, temp_dir
+@pytest.mark.parametrize(
+    "warehouse, fallback_warehouse_call, fallback_side_effect",
+    [
+        (
+            "MockWarehouse",
+            [mock.call("use warehouse MockWarehouse")],
+            [None],
+        ),
+        (
+            None,
+            [],
+            [],
+        ),
+    ],
+)
+def test_get_snowsight_url_with_pdf_warehouse(
+    mock_conn,
+    mock_execute_query,
+    mock_snowsight_host,
+    mock_account,
+    mock_context,
+    warehouse,
+    fallback_warehouse_call,
+    fallback_side_effect,
+    temp_dir,
+    mock_cursor,
 ):
-    mock_conn.return_value = None
+    mock_conn.return_value = MockConnectionCtx(warehouse=warehouse)
     mock_snowsight_host.return_value = "https://host"
     mock_context.return_value = "organization"
     mock_account.return_value = "account"
@@ -596,11 +633,85 @@ def test_get_snowsight_url(
         contents=[mock_snowflake_yml_file],
     )
 
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor([{"CURRENT_WAREHOUSE()": warehouse}], []),
+                mock.call("select current_warehouse()", cursor_class=DictCursor),
+            ),
+            (None, mock.call("use warehouse app_warehouse")),
+        ]
+    )
+    mock_execute_query.side_effect = side_effects + fallback_side_effect
+
     native_app_manager = _get_na_manager()
     assert (
         native_app_manager.get_snowsight_url()
         == "https://host/organization/account/#/apps/application/MYAPP"
     )
+    assert mock_execute_query.mock_calls == expected + fallback_warehouse_call
+
+
+# With connection warehouse, without PDF warehouse
+# Without connection warehouse, without PDF warehouse
+@mock.patch("snowflake.cli._plugins.connection.util.get_context")
+@mock.patch("snowflake.cli._plugins.connection.util.get_account")
+@mock.patch("snowflake.cli._plugins.connection.util.get_snowsight_host")
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+@mock_connection()
+@pytest.mark.parametrize(
+    "project_definition_files, warehouse, expected_calls, fallback_side_effect",
+    [
+        (
+            "napp_project_1",
+            "MockWarehouse",
+            [mock.call("select current_warehouse()", cursor_class=DictCursor)],
+            [None],
+        ),
+        (
+            "napp_project_1",
+            None,
+            [],
+            [],
+        ),
+    ],
+    indirect=["project_definition_files"],
+)
+def test_get_snowsight_url_without_pdf_warehouse(
+    mock_conn,
+    mock_execute_query,
+    mock_snowsight_host,
+    mock_account,
+    mock_context,
+    project_definition_files,
+    warehouse,
+    expected_calls,
+    fallback_side_effect,
+    mock_cursor,
+):
+    mock_conn.return_value = MockConnectionCtx(warehouse=warehouse)
+    mock_snowsight_host.return_value = "https://host"
+    mock_context.return_value = "organization"
+    mock_account.return_value = "account"
+
+    working_dir: Path = project_definition_files[0].parent
+
+    mock_execute_query.side_effect = [
+        mock_cursor([{"CURRENT_WAREHOUSE()": warehouse}], [])
+    ] + fallback_side_effect
+
+    native_app_manager = _get_na_manager(str(working_dir))
+    if warehouse:
+        assert (
+            native_app_manager.get_snowsight_url()
+            == "https://host/organization/account/#/apps/application/MYAPP_POLLY"
+        )
+    else:
+        with pytest.raises(ClickException) as err:
+            native_app_manager.get_snowsight_url()
+        assert "Application warehouse cannot be empty." in err.value.message
+
+    assert mock_execute_query.mock_calls == expected_calls
 
 
 def test_ensure_correct_owner():
@@ -1008,7 +1119,7 @@ def test_validate_not_deployed(mock_execute, temp_dir, mock_cursor):
             (
                 ProgrammingError(
                     msg="Application package app_pkg does not exist or not authorized.",
-                    errno=2003,
+                    errno=DOES_NOT_EXIST_OR_NOT_AUTHORIZED,
                 ),
                 mock.call(
                     "call system$validate_native_app_setup('@app_pkg.app_src.stage')"
@@ -1072,6 +1183,7 @@ def test_validate_use_scratch_stage(
         recursive=True,
         stage_fqn=native_app_manager.scratch_stage_fqn,
         validate=False,
+        print_diff=False,
     )
     assert mock_execute.mock_calls == expected
 
@@ -1137,6 +1249,7 @@ def test_validate_failing_drops_scratch_stage(
         recursive=True,
         stage_fqn=native_app_manager.scratch_stage_fqn,
         validate=False,
+        print_diff=False,
     )
     assert mock_execute.mock_calls == expected
 
@@ -1188,3 +1301,398 @@ def test_validate_raw_returns_data(mock_execute, temp_dir, mock_cursor):
         == failure_data
     )
     assert mock_execute.mock_calls == expected
+
+
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+def test_account_event_table(mock_execute, temp_dir, mock_cursor):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    event_table = "db.schema.event_table"
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor([dict(key="EVENT_TABLE", value=event_table)], []),
+                mock.call(
+                    "show parameters like 'event_table' in account",
+                    cursor_class=DictCursor,
+                ),
+            ),
+        ]
+    )
+    mock_execute.side_effect = side_effects
+
+    native_app_manager = _get_na_manager()
+    assert native_app_manager.account_event_table == event_table
+
+
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+def test_account_event_table_not_set_up(mock_execute, temp_dir, mock_cursor):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor([], []),
+                mock.call(
+                    "show parameters like 'event_table' in account",
+                    cursor_class=DictCursor,
+                ),
+            ),
+        ]
+    )
+    mock_execute.side_effect = side_effects
+
+    native_app_manager = _get_na_manager()
+    assert native_app_manager.account_event_table == ""
+
+
+@pytest.mark.parametrize(
+    ["since", "expected_since_clause"],
+    [
+        ("", ""),
+        ("1 hour", "and timestamp >= sysdate() - interval '1 hour'"),
+        (datetime(2024, 1, 1), "and timestamp >= '2024-01-01 00:00:00'"),
+    ],
+)
+@pytest.mark.parametrize(
+    ["until", "expected_until_clause"],
+    [
+        ("", ""),
+        ("20 minutes", "and timestamp <= sysdate() - interval '20 minutes'"),
+        (datetime(2024, 1, 1), "and timestamp <= '2024-01-01 00:00:00'"),
+    ],
+)
+@pytest.mark.parametrize(
+    ["scopes", "expected_scopes_clause"],
+    [
+        ([], ""),
+        (["scope_1"], "and scope:name in ('scope_1')"),
+        (["scope_1", "scope_2"], "and scope:name in ('scope_1','scope_2')"),
+    ],
+)
+@pytest.mark.parametrize(
+    ["types", "expected_types_clause"],
+    [
+        ([], ""),
+        (["log"], "and record_type in ('log')"),
+        (["log", "span"], "and record_type in ('log','span')"),
+    ],
+)
+@pytest.mark.parametrize(
+    ["first", "expected_first_clause"],
+    [
+        (-1, ""),
+        (0, "limit 0"),
+        (10, "limit 10"),
+    ],
+)
+@pytest.mark.parametrize(
+    ["last", "expected_last_clause"],
+    [
+        (-1, ""),
+        (0, "limit 0"),
+        (20, "limit 20"),
+    ],
+)
+@mock.patch(
+    NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE,
+    return_value="db.schema.event_table",
+    new_callable=mock.PropertyMock,
+)
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+def test_get_events(
+    mock_execute,
+    mock_account_event_table,
+    temp_dir,
+    mock_cursor,
+    since,
+    expected_since_clause,
+    until,
+    expected_until_clause,
+    types,
+    expected_types_clause,
+    scopes,
+    expected_scopes_clause,
+    first,
+    expected_first_clause,
+    last,
+    expected_last_clause,
+):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    events = [dict(TIMESTAMP=datetime(2024, 1, 1), VALUE="test")] * 100
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor(events, []),
+                mock.call(
+                    dedent(
+                        f"""\
+                        select * from (
+                            select timestamp, value::varchar value
+                            from db.schema.event_table
+                            where resource_attributes:"snow.database.name" = 'MYAPP'
+                            {expected_since_clause}
+                            {expected_until_clause}
+                            {expected_types_clause}
+                            {expected_scopes_clause}
+                            order by timestamp desc
+                            {expected_last_clause}
+                        ) order by timestamp asc
+                        {expected_first_clause}
+                        """
+                    ),
+                    cursor_class=DictCursor,
+                ),
+            ),
+        ]
+    )
+    mock_execute.side_effect = side_effects
+
+    def get_events():
+        native_app_manager = _get_na_manager()
+        return native_app_manager.get_events(
+            since=since,
+            until=until,
+            record_types=types,
+            scopes=scopes,
+            first=first,
+            last=last,
+        )
+
+    if first >= 0 and last >= 0:
+        # Filtering on first and last events at the same time doesn't make sense
+        with pytest.raises(ValueError):
+            get_events()
+    else:
+        assert get_events() == events
+        assert mock_execute.mock_calls == expected
+
+
+@mock.patch(
+    NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE,
+    return_value="db.schema.event_table",
+    new_callable=mock.PropertyMock,
+)
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+def test_get_events_quoted_app_name(
+    mock_execute, mock_account_event_table, temp_dir, mock_cursor
+):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+    create_named_file(
+        file_name="snowflake.local.yml",
+        dir_name=temp_dir,
+        contents=[quoted_override_yml_file],
+    )
+
+    events = [dict(TIMESTAMP=datetime(2024, 1, 1), VALUE="test")] * 100
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor(events, []),
+                mock.call(
+                    dedent(
+                        f"""\
+                        select * from (
+                            select timestamp, value::varchar value
+                            from db.schema.event_table
+                            where resource_attributes:"snow.database.name" = 'My Application'
+                        
+                        
+                        
+                        
+                            order by timestamp desc
+                        
+                        ) order by timestamp asc
+                        
+                        """
+                    ),
+                    cursor_class=DictCursor,
+                ),
+            ),
+        ]
+    )
+    mock_execute.side_effect = side_effects
+
+    native_app_manager = _get_na_manager()
+    assert native_app_manager.get_events() == events
+    assert mock_execute.mock_calls == expected
+
+
+@mock.patch(
+    NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE,
+    return_value=None,
+    new_callable=mock.PropertyMock,
+)
+def test_get_events_no_event_table(mock_account_event_table, temp_dir, mock_cursor):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    native_app_manager = _get_na_manager()
+    with pytest.raises(NoEventTableForAccount):
+        native_app_manager.get_events()
+
+
+@mock.patch(
+    NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE,
+    return_value="db.schema.event_table",
+    new_callable=mock.PropertyMock,
+)
+@mock.patch(NATIVEAPP_MANAGER_EXECUTE)
+def test_stream_events(mock_execute, mock_account_event_table, temp_dir, mock_cursor):
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=temp_dir,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    events = [
+        [dict(TIMESTAMP=datetime(2024, 1, 1), VALUE="test")] * 10,
+        [dict(TIMESTAMP=datetime(2024, 1, 2), VALUE="test")] * 10,
+    ]
+    side_effects, expected = mock_execute_helper(
+        [
+            (
+                mock_cursor(events[0], []),
+                mock.call(
+                    dedent(
+                        f"""\
+                        select * from (
+                            select timestamp, value::varchar value
+                            from db.schema.event_table
+                            where resource_attributes:"snow.database.name" = 'MYAPP'
+                            
+                            
+                            
+                            
+                            order by timestamp desc
+                            limit {len(events[0])}
+                        ) order by timestamp asc
+                        
+                        """
+                    ),
+                    cursor_class=DictCursor,
+                ),
+            ),
+            (
+                mock_cursor(events[1], []),
+                mock.call(
+                    dedent(
+                        """\
+                        select * from (
+                            select timestamp, value::varchar value
+                            from db.schema.event_table
+                            where resource_attributes:"snow.database.name" = 'MYAPP'
+                            and timestamp >= '2024-01-01 00:00:00'
+                            
+                            
+                            
+                            order by timestamp desc
+                            
+                        ) order by timestamp asc
+                        
+                        """
+                    ),
+                    cursor_class=DictCursor,
+                ),
+            ),
+        ]
+    )
+    mock_execute.side_effect = side_effects
+
+    native_app_manager = _get_na_manager()
+    stream = native_app_manager.stream_events(interval_seconds=0, last=len(events[0]))
+    for i in range(len(events[0])):
+        # Exhaust the initial set of events
+        assert next(stream) == events[0][i]
+    assert mock_execute.call_count == 1
+
+    for i in range(len(events[1])):
+        # Then it'll make another query which returns the second set of events
+        assert next(stream) == events[1][i]
+    assert mock_execute.call_count == 2
+    assert mock_execute.mock_calls == expected
+
+    try:
+        stream.throw(KeyboardInterrupt)
+    except StopIteration:
+        pass
+    else:
+        pytest.fail("stream_events didn't end when receiving a KeyboardInterrupt")
+
+
+@mock.patch.object(NativeAppManager, "validate")
+@mock.patch.object(NativeAppManager, "execute_package_post_deploy_hooks")
+@mock.patch.object(NativeAppManager, "sync_deploy_root_with_stage")
+@mock.patch.object(NativeAppManager, "_apply_package_scripts")
+@mock.patch.object(NativeAppManager, "create_app_package")
+@mock.patch.object(NativeAppManager, "use_role")
+@mock.patch.object(NativeAppManager, "use_package_warehouse")
+def test_deploy_with_package_post_deploy_hook(
+    mock_use_package_warehouse,
+    mock_use_role,
+    mock_create_app_package,
+    mock_apply_package_scripts,
+    mock_sync_deploy_root_with_stage,
+    mock_execute_package_post_deploy_hooks,
+    mock_validate,
+    temp_dir,
+):
+    # Setup
+    mock_diff_result = DiffResult(different=[StagePath("setup.sql")])
+    mock_sync_deploy_root_with_stage.return_value = mock_diff_result
+
+    current_working_directory = os.getcwd()
+    create_named_file(
+        file_name="snowflake.yml",
+        dir_name=current_working_directory,
+        contents=[mock_snowflake_yml_file],
+    )
+
+    # Create NativeAppManager instance
+    manager = _get_na_manager(temp_dir)
+
+    mock_bundle_map = mock.Mock(spec=BundleMap)
+    # Test with default parameters
+    result = manager.deploy(
+        bundle_map=mock_bundle_map,
+        prune=True,
+        recursive=True,
+    )
+
+    # Assertions
+    mock_create_app_package.assert_called_once()
+    mock_use_package_warehouse.assert_called_once()
+    mock_use_role.assert_called_once_with(manager.package_role)
+    mock_apply_package_scripts.assert_called_once()
+    mock_sync_deploy_root_with_stage.assert_called_once_with(
+        bundle_map=mock_bundle_map,
+        role=manager.package_role,
+        prune=True,
+        recursive=True,
+        stage_fqn=manager.stage_fqn,
+        local_paths_to_sync=None,
+        print_diff=True,
+    )
+    mock_execute_package_post_deploy_hooks.assert_called_once()
+    mock_validate.assert_called_once_with(use_scratch_stage=False)
+    assert result == mock_diff_result

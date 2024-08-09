@@ -17,14 +17,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Set
+from typing import List, Optional, Set
 
-NATIVEAPP_MODULE = "snowflake.cli.plugins.nativeapp.manager"
-TEARDOWN_MODULE = "snowflake.cli.plugins.nativeapp.teardown_processor"
+from snowflake.cli._plugins.nativeapp.project_model import (
+    NativeAppProjectModel,
+)
+from snowflake.cli.api.project.schemas.native_app.native_app import NativeApp
+
+NATIVEAPP_MODULE = "snowflake.cli._plugins.nativeapp.manager"
+TEARDOWN_MODULE = "snowflake.cli._plugins.nativeapp.teardown_processor"
 TYPER_CONFIRM = "typer.confirm"
 TYPER_PROMPT = "typer.prompt"
-RUN_MODULE = "snowflake.cli.plugins.nativeapp.run_processor"
-VERSION_MODULE = "snowflake.cli.plugins.nativeapp.version.version_processor"
+RUN_MODULE = "snowflake.cli._plugins.nativeapp.run_processor"
+VERSION_MODULE = "snowflake.cli._plugins.nativeapp.version.version_processor"
+
+CLI_GLOBAL_TEMPLATE_CONTEXT = (
+    "snowflake.cli.api.cli_global_context._CliGlobalContextAccess.template_context"
+)
 
 TEARDOWN_PROCESSOR = f"{TEARDOWN_MODULE}.NativeAppTeardownProcessor"
 NATIVEAPP_MANAGER = f"{NATIVEAPP_MODULE}.NativeAppManager"
@@ -35,6 +44,7 @@ NATIVEAPP_MANAGER_EXECUTE_QUERIES = f"{NATIVEAPP_MANAGER}._execute_queries"
 NATIVEAPP_MANAGER_APP_PKG_DISTRIBUTION_IN_SF = (
     f"{NATIVEAPP_MANAGER}.get_app_pkg_distribution_in_snowflake"
 )
+NATIVEAPP_MANAGER_ACCOUNT_EVENT_TABLE = f"{NATIVEAPP_MANAGER}.account_event_table"
 NATIVEAPP_MANAGER_IS_APP_PKG_DISTRIBUTION_SAME = (
     f"{NATIVEAPP_MANAGER}.verify_project_distribution"
 )
@@ -141,15 +151,28 @@ def _all_paths_under_dir(root: Path) -> List[Path]:
 
 
 # TODO: move to shared utils between integration tests and unit tests once available
-def assert_dir_snapshot(root: Path, snapshot) -> None:
+def assert_dir_snapshot(root: Path, os_agnostic_snapshot) -> None:
     all_paths = _all_paths_under_dir(root)
 
     # Verify the contents of the directory matches expectations
-    assert "\n".join([_stringify_path(p) for p in all_paths]) == snapshot
+    assert "\n".join([_stringify_path(p) for p in all_paths]) == os_agnostic_snapshot
 
     # Verify that each file under the directory matches expectations
     for path in all_paths:
         if path.is_file():
-            snapshot_contents = f"===== Contents of: {path} =====\n"
+            snapshot_contents = f"===== Contents of: {path.as_posix()} =====\n"
             snapshot_contents += path.read_text(encoding="utf-8")
-            assert snapshot_contents == snapshot
+            assert (
+                snapshot_contents == os_agnostic_snapshot
+            ), f"\nExpected:\n{os_agnostic_snapshot}\nGot:\n{snapshot_contents}"
+
+
+def create_native_app_project_model(
+    project_definition: NativeApp, project_root: Optional[Path] = None
+) -> NativeAppProjectModel:
+    if project_root is None:
+        project_root = Path().resolve()
+    return NativeAppProjectModel(
+        project_definition=project_definition,
+        project_root=project_root,
+    )

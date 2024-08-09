@@ -17,7 +17,16 @@ from __future__ import annotations
 from typing import Optional, cast
 
 from pydantic import Field
-from snowflake.cli.api.project.schemas.updatable_model import IdentifierField
+from snowflake.cli.api.project.schemas.updatable_model import (
+    IdentifierField,
+    UpdatableModel,
+)
+
+
+class Identifier(UpdatableModel):
+    name: str = Field(title="Entity name")
+    schema_: str = Field(title="Entity schema", alias="schema", default=None)
+    database: str = Field(title="Entity database", default=None)
 
 
 class ObjectIdentifierBaseModel:
@@ -36,7 +45,7 @@ def ObjectIdentifierModel(object_name: str) -> ObjectIdentifierBaseModel:  # noq
     """Generates ObjectIdentifierBaseModel but with object specific descriptions."""
 
     class _ObjectIdentifierModel(ObjectIdentifierBaseModel):
-        name: str = Field(title=f"{object_name} name")
+        name: str = Field(title=f"{object_name.capitalize()} name")
         database: Optional[str] = IdentifierField(
             title=f"Name of the database for the {object_name}", default=None
         )

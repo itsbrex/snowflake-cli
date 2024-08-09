@@ -17,6 +17,9 @@ import pytest
 from tests_integration.test_utils import row_from_cursor
 from tests_integration.testing_utils.naming_utils import ObjectNameProvider
 
+from contextlib import contextmanager
+import json
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
@@ -132,3 +135,188 @@ def test_show_drop_image_repository(runner, test_database, snowflake_session):
     )
     assert result_drop.exit_code == 0, result_drop.output
     assert f"{repo_name} successfully dropped" in result_drop.output
+
+
+@pytest.mark.parametrize(
+    "object_type,object_definition",
+    [
+        ("database", {}),
+        (
+            "schema",
+            {"name": "test_create_schema"},
+        ),
+        ("image-repository", {"name": "test_create_image_repo"}),
+        (
+            "table",
+            {
+                "name": "test_create_table",
+                "columns": [{"name": "col1", "datatype": "number", "nullable": False}],
+                "constraints": [
+                    {
+                        "name": "prim_key",
+                        "column_names": ["col1"],
+                        "constraint_type": "PRIMARY KEY",
+                    }
+                ],
+            },
+        ),
+        (
+            "task",
+            {
+                "name": "test_create_task",
+                "definition": "select 42",
+                "warehouse": "xsmall",
+                "schedule": {"schedule_type": "MINUTES_TYPE", "minutes": 32},
+            },
+        ),
+        (
+            "warehouse",
+            {"name": "test_create_warehouse_<UUID>", "warehouse_size": "xsmall"},
+        ),
+    ],
+)
+@pytest.mark.integration
+def test_create(object_type, object_definition, runner, test_database):
+    if object_type == "database":
+        object_definition["name"] = test_database + "_test_create_db"
+    if "<UUID>" in object_definition["name"]:
+        import uuid
+
+        object_definition["name"] = object_definition["name"].replace(
+            "<UUID>", str(uuid.uuid4().hex)
+        )
+
+    object_name = object_definition["name"]
+    object_definition["comment"] = "created by Snowflake CLI automatic testing"
+
+    @contextmanager
+    def _cleanup_object():
+        drop_cmd = ["object", "drop", object_type, object_name]
+        try:
+            yield
+            runner.invoke_with_connection(drop_cmd, catch_exceptions=True)
+        except Exception as e:
+            runner.invoke_with_connection(drop_cmd, catch_exceptions=True)
+            raise e
+
+    def _test_create(params):
+        # create object
+        result = runner.invoke_with_connection(
+            ["object", "create", object_type, *params]
+        )
+        assert result.exit_code == 0, result.output
+        assert f"{object_name.upper()} successfully created" in result.output
+
+        # object is visible
+        result = runner.invoke_with_connection_json(["object", "list", object_type])
+        assert result.exit_code == 0, result.output
+        assert any(obj["name"].upper() == object_name.upper() for obj in result.json)
+
+    # test json param
+    with _cleanup_object():
+        _test_create(["--json", json.dumps(object_definition)])
+    # test key=value format
+    with _cleanup_object():
+        list_definition = [
+            f"{key}={json.dumps(value)}" for key, value in object_definition.items()
+        ]
+        _test_create(list_definition)
+
+
+@pytest.mark.integration
+def test_create_error_conflict(runner, test_database, caplog):
+    # conflict - an object already exists
+    schema_name = "schema_noble_knight"
+    result = runner.invoke_with_connection(
+        ["object", "create", "schema", f"name={schema_name}"]
+    )
+    assert result.exit_code == 0, result.output
+    result = runner.invoke_with_connection(
+        ["object", "create", "schema", f"name={schema_name}", "--debug"]
+    )
+    assert result.exit_code == 1
+    assert "An unexpected error occurred while creating the object." in result.output
+    assert "object you are trying to create already exists" in result.output
+    assert "409 Conflict" in caplog.text
+    caplog.clear()
+
+
+@pytest.mark.integration
+def test_create_error_misspelled_argument(runner, test_database, caplog):
+    # misspelled argument
+    schema_name = "another_schema_name"
+    result = runner.invoke_with_connection(
+        ["object", "create", "schema", f"named={schema_name}", "--debug"]
+    )
+    assert result.exit_code == 1
+    assert (
+        "Incorrect object definition (arguments misspelled or malformatted)."
+        in result.output
+    )
+    assert "HTTP 400: Bad Request" in caplog.text
+    caplog.clear()
+
+
+@pytest.mark.integration
+def test_create_error_unsupported_type(runner, test_database):
+    # object type that don't exist
+    result = runner.invoke_with_connection(
+        ["object", "create", "type_that_does_not_exist", "name=anything"]
+    )
+    assert result.exit_code == 1
+    assert "Error" in result.output
+    assert (
+        "Create operation for type type_that_does_not_exist is not supported."
+        in result.output
+    )
+    assert "using `sql -q 'CREATE ...'` command." in result.output
+
+
+@pytest.mark.integration
+def test_create_error_database_not_exist(runner):
+    # database does not exist
+    result = runner.invoke_with_connection(
+        [
+            "object",
+            "create",
+            "schema",
+            "name=test_schema",
+            "--database",
+            "this_db_does_not_exist",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Error" in result.output
+    assert "Database 'THIS_DB_DOES_NOT_EXIST' does not exist." in result.output
+
+
+@pytest.mark.integration
+def test_create_error_schema_not_exist(runner, test_database):
+    # schema does not exist
+    result = runner.invoke_with_connection(
+        [
+            "object",
+            "create",
+            "image-repository",
+            "name=test_schema",
+            "--schema",
+            "this_schema_does_not_exist",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Error" in result.output
+    assert "Schema 'THIS_SCHEMA_DOES_NOT_EXIST' does not exist." in result.output
+
+
+@pytest.mark.integration
+def test_create_error_undefined_database(runner):
+    # undefined database
+    result = runner.invoke_with_connection(
+        ["object", "create", "schema", f"name=test_schema"]
+    )
+    assert result.exit_code == 1, result.output
+    assert "Error" in result.output
+    assert (
+        "Database not defined in connection. Please try again with `--database` flag."
+        in result.output
+    )
