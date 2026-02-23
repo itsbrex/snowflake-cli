@@ -22,7 +22,11 @@ from snowflake.cli._plugins.dcm.exceptions import (
 )
 from snowflake.cli._plugins.dcm.manager import DCMProjectManager
 from snowflake.cli._plugins.dcm.models import DCMManifest, TargetContext
-from snowflake.cli._plugins.dcm.reporters import RefreshReporter, TestReporter
+from snowflake.cli._plugins.dcm.reporters import (
+    AnalyzeReporter,
+    RefreshReporter,
+    TestReporter,
+)
 from snowflake.cli._plugins.dcm.utils import mock_dcm_response
 from snowflake.cli._plugins.object.command_aliases import add_object_command_aliases
 from snowflake.cli._plugins.object.commands import scope_option
@@ -289,6 +293,38 @@ def plan(
         )
 
     return _process_plan_result(result)
+
+
+@app.command(requires_connection=True, hidden=True)
+def raw_analyze(
+    identifier: Optional[FQN] = optional_dcm_identifier,
+    from_location: SecurePath = from_option,
+    variables: Optional[List[str]] = variables_flag,
+    target: Optional[str] = target_option,
+    **options,
+):
+    """Analyzes a DCM Project."""
+    context = _resolve_context_with_required_manifest(from_location, identifier, target)
+    project_id = context.project_identifier
+
+    manager = DCMProjectManager()
+    effective_stage = manager.sync_local_files(
+        project_identifier=project_id,
+        source_directory=str(from_location.path),
+    )
+
+    with cli_console.spinner() as spinner:
+        spinner.add_task(description=f"Analyzing dcm project {project_id}", total=None)
+        result = manager.raw_analyze(
+            project_identifier=project_id,
+            configuration=context.configuration,
+            from_stage=effective_stage,
+            variables=variables,
+        )
+
+    reporter = AnalyzeReporter()
+    reporter.process(result)
+    return EmptyResult()
 
 
 @app.command(requires_connection=True)

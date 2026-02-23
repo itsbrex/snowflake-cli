@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import pytest
 
@@ -30,6 +31,17 @@ def _assert_project_has_deployments(
         (deployment["name"], deployment["alias"]) for deployment in result.json
     }
     assert deployments == expected_deployments
+
+
+def _extract_and_validate_raw_analyze_json(output: str):
+    lines = output.strip().split("\n")
+    json_line = next(
+        (line for line in reversed(lines) if line.strip().startswith(("{", "["))), None
+    )
+    assert json_line, "No JSON output found"
+    output_json = json.loads(json_line)
+    assert isinstance(output_json, (list, dict)), "Expected JSON response"
+    return output_json
 
 
 @pytest.mark.qa_only
@@ -623,6 +635,14 @@ def test_dcm_end_to_end_workflow(
             == f"project_descriptive_name_{expected_config}".upper()
         )
 
+        # Run raw-analyze
+        result = runner.invoke_with_connection(
+            ["dcm", "raw-analyze", "-D", f"db='{test_database}'"] + target_args
+        )
+        assert result.exit_code == 0, result.output
+        _extract_and_validate_raw_analyze_json(result.output)
+        assert "Analysis completed successfully." in result.output
+
         result = runner.invoke_with_connection_json(
             ["dcm", "plan", "-D", f"db='{test_database}'"] + target_args
         )
@@ -643,3 +663,33 @@ def test_dcm_end_to_end_workflow(
 
         result = runner.invoke_with_connection(["dcm", "drop"] + target_args)
         assert result.exit_code == 0, result.output
+
+
+@pytest.mark.qa_only
+@pytest.mark.integration
+def test_dcm_raw_analyze_with_errors(
+    runner,
+    test_database,
+    project_directory,
+    object_name_provider,
+):
+    project_name = object_name_provider.create_and_get_next_object_name()
+    correct_table_fqn = f"{test_database}.PUBLIC.CORRECT_TABLE"
+    incorrect_table_fqn = f"{test_database}.PUBLIC.INCORRECT_TABLE"
+
+    with project_directory("dcm_project") as project_root:
+        # Create the project
+        result = runner.invoke_with_connection(["dcm", "create", project_name])
+        assert result.exit_code == 0, result.output
+
+        # Define one correct and one incorrect table
+        file_a_path = project_root / "sources" / "definitions" / "file_a.sql"
+        file_a_path.write_text(
+            f"define table identifier('{correct_table_fqn}') (id int, name varchar);\n"
+            f"define table identifier('{incorrect_table_fqn}') (id int, name unknown_type);\n"
+        )
+
+        # raw-analyze should detect the error and fail with exit code 1
+        result = runner.invoke_with_connection(["dcm", "raw-analyze", project_name])
+        assert result.exit_code == 1, result.output
+        assert "Analysis found 1 error(s)." in result.output
